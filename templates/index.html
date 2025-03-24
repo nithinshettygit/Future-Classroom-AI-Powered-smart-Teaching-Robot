@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Learning Assistant</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>AI Learning Assistant</h1>
+        <div id="chat">
+            <!-- Chat messages will be dynamically added here -->
+        </div>
+        <div class="input-container">
+            <input type="text" id="queryInput" placeholder="Ask a question..." onkeypress="handleKeyPress(event)">
+            <button onclick="askQuestion()">Ask</button>
+        </div>
+    </div>
+
+    <script>
+        async function askQuestion() {
+            const queryInput = document.getElementById("queryInput");
+            const query = queryInput.value.trim();
+            const chatDiv = document.getElementById("chat");
+
+            if (!query) {
+                alert("Please enter a question.");
+                return;
+            }
+
+            // Add the user's query to the chat
+            chatDiv.innerHTML += `<div class="user-message">You: ${query}</div>`;
+            queryInput.value = "";
+
+            // Show loading indicator
+            chatDiv.innerHTML += `<div class="assistant-message">Assistant: Loading...</div>`;
+            chatDiv.scrollTop = chatDiv.scrollHeight;
+
+            // Send the query to the backend
+            const res = await fetch("/ask", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ query }),
+            });
+
+            const data = await res.json();
+
+            // Replace the loading message with the assistant's response
+            const responseDiv = document.createElement("div");
+            responseDiv.className = "assistant-message";
+            responseDiv.innerHTML = `Assistant: ${data.response || "Error: " + data.error}`;
+            chatDiv.appendChild(responseDiv);
+
+            // Display the image if available
+            if (data.image) {
+                const imageDiv = document.createElement("div");
+                imageDiv.className = "media-container";
+                imageDiv.innerHTML = `<img src="${data.image}" alt="Relevant Image" class="media">`;
+                chatDiv.appendChild(imageDiv);
+            }
+
+            // Display the image description if available
+            if (data.image_description) {
+                const descriptionDiv = document.createElement("div");
+                descriptionDiv.className = "assistant-message";
+                descriptionDiv.innerHTML = `Image Description: ${data.image_description}`;
+                chatDiv.appendChild(descriptionDiv);
+            }
+
+            // Scroll to the bottom of the chat
+            chatDiv.scrollTop = chatDiv.scrollHeight;
+        }
+
+        function handleKeyPress(event) {
+            // Trigger askQuestion() when Enter key is pressed
+            if (event.key === "Enter") {
+                askQuestion();
+            }
+        }
+    </script>
+</body>
+</html>
