@@ -1,108 +1,80 @@
-from flask import Flask, request, jsonify, render_template
-from retrieval import ContentRetriever
-from generation import ContentGenerator
+from flask import Flask, render_template, request
+from pathlib import Path
+from data_loader import DataLoader
+from embedding_generator import EmbeddingGenerator
+from query_processor import QueryProcessor
+from content_generator import ContentGenerator
+import faiss
+import numpy as np
 import os
-import re  # For detecting topic changes
 
 app = Flask(__name__)
 
-# Initialize retriever and generator
-retriever = ContentRetriever(
-    "data/textbook_faiss.index",
-    "data/metadata.json",
-    "data/knowledgebase.json"  # Path to knowledgebase.json
-)
-generator = ContentGenerator()
+# Configuration
+BASE_DIR = Path(__file__).parent
+DATA_PATH = BASE_DIR / "integrated.json"
+IMAGE_DIR = BASE_DIR / "static" / "images"
+os.makedirs(IMAGE_DIR, exist_ok=True)
 
-# Store conversation history in memory (for simplicity)
-conversation_history = []
+def init_system():
+    print("⚗️ Chemistry Teacher System Initializing...")
+    
+    # Load data
+    data = DataLoader.load_data(DATA_PATH)
+    
+    # Prepare embeddings
+    embedder = EmbeddingGenerator()
+    
+    # Create topic index
+    topic_texts, topic_meta = DataLoader.prepare_topic_data(data)
+    topic_embeddings = embedder.generate_embeddings(topic_texts)
+    topic_index = embedder.create_faiss_index(topic_embeddings)
+    
+    # Create figure index
+    figure_texts, figure_meta = DataLoader.prepare_figure_data(data)
+    figure_embeddings = embedder.generate_embeddings(figure_texts)
+    figure_index = embedder.create_faiss_index(figure_embeddings)
+    
+    return {
+        'processor': QueryProcessor(topic_index, figure_index, topic_meta, figure_meta),
+        'generator': ContentGenerator()
+    }
 
-def is_topic_change(query):
-    """Detect if the user wants to change the topic."""
-    # Keywords indicating a topic change
-    topic_change_keywords = [
-        "move to", "new topic", "new chapter", "let's discuss", "next topic", "next chapter"
-    ]
-    # Check if any keyword is in the query
-    return any(keyword in query.lower() for keyword in topic_change_keywords)
+system = init_system()
 
-@app.route("/")
-def home():
-    """Render the chat interface."""
-    return render_template("index.html")
-
-@app.route("/ask", methods=["POST"])
-def ask():
-    """Handle user queries and return the generated response."""
-    global conversation_history
-
-    try:
-        data = request.json
-        query = data.get("query")
-
-        if not query:
-            return jsonify({"error": "No query provided"}), 400
-
-        # Check if the user wants to change the topic
-        if is_topic_change(query):
-            conversation_history = []  # Reset conversation history
-            return jsonify({
-                "query": query,
-                "response": "Sure! Let's move to a new topic. What would you like to discuss next?",
-                "image": None,
-                "image_description": ""
-            })
-
-        # Add the user's query to the conversation history
-        conversation_history.append({"role": "user", "content": query})
-
-        # Retrieve explanation
-        explanation = retriever.get_explanation(query)
-
-        # Generate detailed and student-friendly content
-        generated_explanation = generator.generate_content(query, explanation)
-
-        # If the explanation is None, the topic is out of syllabus
-        if explanation is None:
-            generated_explanation = (
-                "This is out of syllabus content, but here's a detailed explanation:\n\n"
-                + generated_explanation
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    result = None
+    if request.method == 'POST':
+        query = request.form.get('query', '').strip()
+        if query:
+            # Process query
+            query_result = system['processor'].process_query(query)
+            
+            # Generate explanations
+            explanation = system['generator'].generate_topic_explanation(
+                query_result.topic_content,
+                query_result.subchapter
             )
+            
+            # Process figures with image verification
+            figures = []
+            for fig in query_result.relevant_figures:
+                figure_data = system['generator'].generate_figure_explanation(fig)
+                
+                # Verify image exists
+                if figure_data['path'] and not Path(figure_data['path'].lstrip('/')).exists():
+                    figure_data['path'] = None
+                figures.append(figure_data)
+            
+            result = {
+                'query': query,
+                'explanation': explanation,
+                'figures': figures,
+                'subchapter': query_result.subchapter
+            }
+    
+    return render_template('index.html', result=result)
 
-        # Fetch relevant image (handle errors gracefully)
-        image_path = None
-        if explanation is not None:  # Only fetch images for in-syllabus topics
-            try:
-                image_path = generator.fetch_image(query)
-            except Exception as e:
-                print(f"Error fetching image: {e}")
-
-        # Generate image description (if image is available)
-        image_description = ""
-        if image_path:
-            try:
-                image_description = generator.generate_image_description(image_path)
-                if not image_description:
-                    image_description = "No description available for the image."
-                # Ensure the image path is relative to the static folder
-                image_path = image_path.replace("static/", "")
-            except Exception as e:
-                print(f"Error generating image description: {e}")
-
-        # Add the model's response to the conversation history
-        conversation_history.append({"role": "assistant", "content": generated_explanation})
-
-        # Return the response with multimedia links
-        return jsonify({
-            "query": query,
-            "response": generated_explanation,
-            "image": image_path,  # Path to the fetched image (or None if failed)
-            "image_description": image_description  # Description of the image (or empty if failed)
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-if __name__ == "__main__":
-    # Create the static/images directory if it doesn't exist
-    os.makedirs(os.path.join("static", "images"), exist_ok=True)
-    app.run(debug=True)
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
